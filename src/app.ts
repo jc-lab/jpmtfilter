@@ -10,7 +10,7 @@ import {
 } from './client-pair';
 
 const opts = getopts.create([
-  ['', 'mode=spawned|socket', '', 'listen'],
+  ['', 'mode=spawned|socket', '', 'socket'],
   ['', 'listen-port=PORT'   , '', '10025'],
   ['', 'next-hop=HOST:PORT' , ''],
   ['', 'next-hop-host=HOST' , ''],
