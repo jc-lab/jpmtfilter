@@ -28,22 +28,23 @@ submission inet n       -       n       -       -       smtpd
 ...
   -o milter_macro_daemon_name=ORIGINATING
 # spawn mode
-  -o content_filter=jpmtfilter
+  -o content_filter=cfilter:127.0.0.1:10025
 # socket mode
-  -o content_filter=jpmtfilter:[FILTER_HOST]:FILTER_PORT
+  -o content_filter=cfilter:[FILTER_HOST]:FILTER_PORT
 
-# spawn mode
-jpmtfilter unix   y     y       n       -       0      spawn
-  user=jpmtfilter argv=/opt/jpmtfilter.sh --mode=spawned --next-hop=127.0.0.1:10026 --handler-url=...
-
-# socket mode
-jpmtfilter unix   y     y       n       -       0       smtp
+# common
+cfilter unix   y     y       n       -       0       smtp
   -o smtp_send_xforward_command=yes
   -o disable_mime_output_conversion=yes
   -o smtp_generic_maps=
   -o smtp_use_tls=no
   -o smtp_tls_security_level=none
 
+# spawn mode
+127.0.0.1:10025 inet   n     n       n       -       0      spawn
+  user=jpmtfilter argv=/opt/jpmtfilter.sh --mode=spawned --next-hop=127.0.0.1:10026 --handler-url=...
+
+# socket mode
 127.0.0.1:10026 inet  n       -       n       -       10      smtpd
   -o content_filter=
   -o receive_override_options=no_unknown_recipient_checks,no_header_body_checks,no_milters
