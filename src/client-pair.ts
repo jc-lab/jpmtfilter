@@ -43,7 +43,7 @@ interface INextHopConnection {
 interface IContext {
   messageId: string | undefined;
   trackerId: string;
-  generatedTracker: Promise<IGeneratedMailTracker> | null;
+  generatedTracker: Promise<IGeneratedMailTracker | null>;
 }
 
 function rfc1342Decode(_input: string) {
@@ -115,6 +115,7 @@ export class ClientPair {
       this.errorHandler(e);
     });
     nextHopSock.on('close', () => {
+      console.error('TP_nextHopSock_CLOSE_01');
       this._writable.end();
     });
     this._connHelper = new SmtpConnectionHelper({
@@ -133,12 +134,12 @@ export class ClientPair {
       lazyCommand: []
     };
 
-    this._nextHopConn.parser = new SMTPStream();
     this._nextHopConn.parser.oncommand = this.onNextHopCommand.bind(this);
 
     this._nextHopConn.socket.pipe(this._nextHopConn.parser);
     this._connHelper
       .on('close', () => {
+        console.error('TP_CONN_HELPER_ON_CLOSE_01');
         this.nextHopSendRaw('QUIT');
       });
 
@@ -178,12 +179,17 @@ export class ClientPair {
     const ctx: IContext = {
       messageId: undefined,
       trackerId: uuid.v4(),
-      generatedTracker: null
+      generatedTracker: null as any
     };
-    const mailRewriter = new Rewriter(
-      (data) => {
-        if (data.root) {
-          if (!ctx.generatedTracker) {
+    ctx.generatedTracker = new Promise<any>((trackerResolve) => {
+      let trackerReady: boolean = false;
+      const trackerReject = (e) => {
+        console.error(e);
+        trackerResolve(null);
+      };
+      const mailRewriter = new Rewriter(
+        (data) => {
+          if (data.root && !trackerReady) {
             const headerKeySet = new Set(data.headers.getList().map(o => o.key));
             const headerList = [...headerKeySet.values()]
               .reduce((list: IDecodedHeaderItem[], cur) => {
@@ -205,99 +211,106 @@ export class ClientPair {
             if (!ctx.messageId) {
               console.error('[WARN] No message-id');
             }
-            ctx.generatedTracker = Promise.resolve(this._config.handlerFunction({
-              messageId: ctx.messageId as string,
-              headers: headerList,
-              commands: this._commandList
-            }));
+            try {
+              Promise.resolve(this._config.handlerFunction({
+                messageId: ctx.messageId as string,
+                headers: headerList,
+                commands: this._commandList
+              }))
+                .then(trackerResolve)
+                .catch(trackerReject);
+            } catch (trackerErr) {
+              trackerReject(trackerErr);
+            }
+            trackerReady = true;
           }
+          return (data.type === 'node' && /text\/html/i.test(data.contentType) && (!data.disposition));
         }
-        return (data.type === 'node' && /text\/html/i.test(data.contentType) && (!data.disposition));
-      }
-    );
-    const mailJoiner = new Joiner();
-    (new Promise<string>((resolve, reject) => {
-      this.nextHopLazySendRaw('DATA', () => {
-        this._nextHopConn.nextHandler = ({ code, message }, payload, callback) => {
-          callback();
-          if (code === '354') {
-            const parsed = RESPONSE_354_REGEX.exec(message.toString());
-            const endOfData = parsed && parsed[1]
-              .replace(/<CR>/g, '\r')
-              .replace(/<LF>/g, '\n') ||
-              '\r\n.\r\n';
-            resolve(endOfData);
-          } else {
-            reject(new Error('reject code = ' + code));
-          }
-        };
-      });
-    }))
-      .then((endOfData: string) => {
-        return Promise.all([ endOfData, ctx.generatedTracker ? ctx.generatedTracker : Promise.resolve(null) ]);
-      })
-      .then(([endOfData, generatedTracker]) => {
-        this._nextHopConn.nextHandler = ({code, message}, payload, callback) => {
-          next(null, message, callback);
-        };
+      );
+      const mailJoiner = new Joiner();
+      (new Promise<string>((resolve, reject) => {
+        this.nextHopLazySendRaw('DATA', () => {
+          this._nextHopConn.nextHandler = ({ code, message }, payload, callback) => {
+            callback();
+            if (code === '354') {
+              const parsed = RESPONSE_354_REGEX.exec(message.toString());
+              const endOfData = parsed && parsed[1]
+                .replace(/<CR>/g, '\r')
+                .replace(/<LF>/g, '\n') ||
+                '\r\n.\r\n';
+              resolve(endOfData);
+            } else {
+              reject(new Error('reject code = ' + code));
+            }
+          };
+        });
+      }))
+        .then((endOfData) => {
+          this._nextHopConn.nextHandler = ({code, message}, payload, callback) => {
+            next(null, message, callback);
+          };
 
-        dataStream
-          .pipe(mailParser)
-          .pipe(mailRewriter)
-          .on('node', (dp) => {
-            const parsedContentType = parseContentType(dp.node.headers.getFirst('Content-Type'));
-            const charset = parsedContentType && parsedContentType.parameter['charset'] || 'utf8';
-            const textDecoder = iconv.getDecoder(charset);
-            const textEncoder = iconv.getEncoder(charset);
-            let textBuffer: string[] = [];
-            dp.decoder
-              .on('data', (data: Buffer) => {
-                if (generatedTracker) {
-                  textBuffer.push(textDecoder.write(data));
-                } else {
-                  dp.encoder.write(data);
-                }
-              })
-              .on('end', () => {
-                if (generatedTracker) {
-                  const html = textBuffer.join(''); textBuffer = null as any;
+          dataStream
+            .pipe(mailParser)
+            .pipe(mailRewriter)
+            .on('node', (dp) => {
+              const parsedContentType = parseContentType(dp.node.headers.getFirst('Content-Type'));
+              const charset = parsedContentType && parsedContentType.parameter['charset'] || 'utf8';
+              const textDecoder = iconv.getDecoder(charset);
+              const textEncoder = iconv.getEncoder(charset);
+              let textBuffer: string[] = [];
+              ctx.generatedTracker
+                .then((generatedTracker) => {
+                  dp.decoder
+                    .on('data', (data: Buffer) => {
+                      if (generatedTracker) {
+                        textBuffer.push(textDecoder.write(data));
+                      } else {
+                        dp.encoder.write(data);
+                      }
+                    })
+                    .on('end', () => {
+                      if (generatedTracker) {
+                        const html = textBuffer.join(''); textBuffer = null as any;
 
-                  const dom = new JSDOM(html);
-                  const body = dom.window.document.querySelector('body') || dom.window.document.querySelector('html');
+                        const dom = new JSDOM(html);
+                        const body = dom.window.document.querySelector('body') || dom.window.document.querySelector('html');
 
-                  if ('html' in generatedTracker && generatedTracker.html) {
-                    const element = dom.window.document.createElement('div');
-                    element.innerHTML = generatedTracker.html;
-                    (body || dom.window.document).appendChild(element);
-                  } else if ('imageSrc' in generatedTracker) {
-                    const img = dom.window.document.createElement('img');
-                    img.src = generatedTracker.imageSrc;
-                    if (generatedTracker.imageAlt) img.alt = generatedTracker.imageAlt;
-                    if (generatedTracker.imageStyles) {
-                      const styles = generatedTracker.imageStyles;
-                      Object.keys(styles)
-                        .forEach(k => {
-                          img.style[k] = styles[k];
-                        });
-                    }
-                    (body || dom.window.document).appendChild(img);
-                  }
+                        if ('html' in generatedTracker && generatedTracker.html) {
+                          const element = dom.window.document.createElement('div');
+                          element.innerHTML = generatedTracker.html;
+                          (body || dom.window.document).appendChild(element);
+                        } else if ('imageSrc' in generatedTracker) {
+                          const img = dom.window.document.createElement('img');
+                          img.src = generatedTracker.imageSrc;
+                          if (generatedTracker.imageAlt) img.alt = generatedTracker.imageAlt;
+                          if (generatedTracker.imageStyles) {
+                            const styles = generatedTracker.imageStyles;
+                            Object.keys(styles)
+                              .forEach(k => {
+                                img.style[k] = styles[k];
+                              });
+                          }
+                          (body || dom.window.document).appendChild(img);
+                        }
 
-                  dp.encoder.write(textEncoder.write(dom.serialize()));
-                  const last = textEncoder.end();
-                  if (last) {
-                    dp.encoder.write(last);
-                  }
-                }
-                dp.encoder.end();
-              });
-          })
-          .pipe(mailJoiner)
-          .on('end', () => {
-            this._nextHopConn.socket.write(Buffer.from(endOfData));
-          })
-          .pipe(this._nextHopConn.socket, { end: false });
-      });
+                        dp.encoder.write(textEncoder.write(dom.serialize()));
+                        const last = textEncoder.end();
+                        if (last) {
+                          dp.encoder.write(last);
+                        }
+                      }
+                      dp.encoder.end();
+                    });
+                });
+            })
+            .pipe(mailJoiner)
+            .on('end', () => {
+              this._nextHopConn.socket.write(Buffer.from(endOfData));
+            })
+            .pipe(this._nextHopConn.socket, { end: false });
+        });
+    });
   }
 
   private _processNextHopLazyCommand() {

@@ -89,19 +89,26 @@ export class SmtpConnectionHelper extends EventEmitter {
     }
 
     this._parser.oncommand = this._onCommand.bind(this);
-    this._readable.pipe(this._parser);
+    this._readable
+      .on('finish', () => {
+        console.error('READABLE_FINISH_01');
+      })
+      .pipe(this._parser);
   }
 
   public init() {
-    this.send(220, this.name + 'ESMTP ' + this.banner, () => {
+    this.send(220, this.name + ' ESMTP ' + this.banner, () => {
       this._ready = true;
     });
   }
 
   public close() {
-    this._writable.end();
-    this._closing = true;
-    this.emit('close');
+    if (!this._closing) {
+      console.error('TP_CLOSE_01');
+      this._writable.end();
+      this._closing = true;
+      this.emit('close');
+    }
   }
 
   private _onCommand(buffer: Buffer, callback?: () => void) {
@@ -214,6 +221,11 @@ export class SmtpConnectionHelper extends EventEmitter {
   }
 
   public sendRaw(payload: string, callback?: () => void) {
+    if (this._closing) {
+      console.error('Aborted sendRaw because in closing', payload);
+      if (callback) callback();
+      return ;
+    }
     const temp = payload + '\r\n';
     this._commandStateStack.shift();
     return this._writable.write(Buffer.from(temp), (err) => {
