@@ -33,8 +33,8 @@ submission inet n       -       n       -       -       smtpd
   -o content_filter=jpmtfilter:[FILTER_HOST]:FILTER_PORT
 
 # spawn mode
-127.0.0.1:10025 inet n  n       n       -       0      spawn
-  user=jpmtfilter argv=JPMTFILTER --mode=spawned --next-hop=127.0.0.1:10026 --handler-url=...
+jpmtfilter unix   y     y       n       -       0      spawn
+  user=jpmtfilter argv=/opt/jpmtfilter.sh --mode=spawned --next-hop=127.0.0.1:10026 --handler-url=...
 
 # socket mode
 jpmtfilter unix   y     y       n       -       0       smtp
