@@ -276,10 +276,10 @@ export class ClientPair {
                         const dom = new JSDOM(html);
                         const body = dom.window.document.querySelector('body') || dom.window.document.querySelector('html');
 
+                        const container = dom.window.document.createElement('div');
+
                         if ('html' in generatedTracker && generatedTracker.html) {
-                          const element = dom.window.document.createElement('div');
-                          element.innerHTML = generatedTracker.html;
-                          (body || dom.window.document).appendChild(element);
+                          container.innerHTML = generatedTracker.html;
                         } else if ('imageSrc' in generatedTracker) {
                           const img = dom.window.document.createElement('img');
                           img.src = generatedTracker.imageSrc;
@@ -291,8 +291,10 @@ export class ClientPair {
                                 img.style[k] = styles[k];
                               });
                           }
-                          (body || dom.window.document).appendChild(img);
+                          container.appendChild(img);
                         }
+
+                        (body || dom.window.document).appendChild(container);
 
                         dp.encoder.write(textEncoder.write(dom.serialize()));
                         const last = textEncoder.end();
